@@ -292,12 +292,30 @@ fn next() -> Arc<Pending> {
     }
 }
 
-/// Starts the workers (half the logical processors, 2 to 8) on first use.
+/// Choose how many background pipeline compilers run at once.
+///
+/// On a six-core CPU the default is three. Two may leave more CPU time for
+/// title threads; more workers can warm the pipeline cache faster but can
+/// also increase peak memory use. Invalid overrides keep the default.
+fn pipeline_worker_count(available: usize, override_count: Option<&str>) -> usize {
+    let default = (available / 2).clamp(2, 8);
+    override_count
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .filter(|&count| (1..=8).contains(&count))
+        .unwrap_or(default)
+}
+
+/// Starts the workers (half the logical processors, 2 to 8 by default) on first use.
+/// `VICTORY_PIPELINE_WORKERS=2` allows a lower-core-count host to reserve
+/// more time for title threads while compiling host pipelines in the background.
 fn workers() -> bool {
     static RUNNING: OnceLock<bool> = OnceLock::new();
     *RUNNING.get_or_init(|| {
         let mut running = false;
-        let workers = std::thread::available_parallelism().map_or(2, |n| (n.get() / 2).clamp(2, 8));
+        let available = std::thread::available_parallelism().map_or(2, |n| n.get());
+        let override_count = std::env::var("VICTORY_PIPELINE_WORKERS").ok();
+        let workers = pipeline_worker_count(available, override_count.as_deref());
+        tracing::info!(workers, available, "host pipeline compilation workers");
         for i in 0..workers {
             let spawned = std::thread::Builder::new()
                 .name(format!("victory-pipelines-{i}"))
@@ -348,6 +366,16 @@ fn drained() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pipeline_worker_override_respects_bounds() {
+        assert_eq!(pipeline_worker_count(6, None), 3);
+        assert_eq!(pipeline_worker_count(6, Some("2")), 2);
+        assert_eq!(pipeline_worker_count(6, Some(" 1 ")), 1);
+        assert_eq!(pipeline_worker_count(6, Some("0")), 3);
+        assert_eq!(pipeline_worker_count(6, Some("9")), 3);
+        assert_eq!(pipeline_worker_count(6, Some("oops")), 3);
+    }
 
     /// A first use queues the pipeline and, within the budget, gets the
     /// worker's answer (here: no host pipeline for no shaders).
