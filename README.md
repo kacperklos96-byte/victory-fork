@@ -10,6 +10,15 @@ correctly and playably on one particular PC.
 copy of the game. It is not affiliated with or endorsed by the game's
 developer or publisher.
 
+## GTX 1650 / six-core CPU experiments
+
+This fork includes [low-end hardware testing notes](docs/gtx1650-tuning.md)
+with a [PowerShell test runner](scripts/gtx1650.ps1). The runner supports
+`visuals`, `balanced` and `fast-experimental` profiles, and the GPU
+pipeline compiler now accepts `VICTORY_PIPELINE_WORKERS=1..8` to control
+background CPU work. These settings are experimental and do **not** yet fix
+black shadows, unimplemented ray-traced lighting or NVIDIA driver crashes.
+
 ## Credits
 
 - **[VIctory](https://github.com/Marvisak/VIctory)** by Marvisak and its
