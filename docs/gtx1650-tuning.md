@@ -27,9 +27,9 @@ git clone https://github.com/kacperklos96-byte/victory-fork.git D:\VIctoryGTX
 cd D:\VIctoryGTX
 Copy-Item victory.example.toml victory.toml
 # Edit victory.toml: game_dir should point to your title's directory.
-cargo test --workspace --locked
-cargo build --release -p victory
-.\scripts\gtx1650.ps1 -GameExe "D:\path\to\title.exe" -Profile visuals
+cargo test --workspace --locked -- --test-threads=1
+cargo build --release --locked -p victory
+.\scripts\gtx1650.ps1 -GameExe "D:\path\to\title.exe" -Profile v3 -OnDemandMips
 ```
 
 The script uses `D:\VIctoryForkData\cache` and
@@ -45,12 +45,20 @@ antivirus or Windows graphics-driver recovery to make a test run.
 
 | Profile | Pipeline workers | Pipeline wait budget | Relay | Goal |
 | --- | ---: | ---: | ---: | --- |
-| visuals (default) | 2 | 1200 ms/frame | off | Reduce dropped first-use draws; can be substantially slower |
+| v3 (default) | 2 | 500 ms/frame | stage 2 | Reduce synchronous copy-back; 2048 MiB target reservation |
+| visuals | 2 | 1200 ms/frame | off | Reduce dropped first-use draws; can be substantially slower |
 | balanced | 2 | 500 ms/frame | off | Compare against the fork's normal wait budget |
 | fast-experimental | 2 | 250 ms/frame | stage 2 | Experimental throughput; may worsen missing graphics or crashes |
 
-All three cap card-side copies at 384 MiB, rather than the normal
-512 MiB. This is a hypothesis for 4 GB VRAM, not a measured win.
+All profiles default to a 512 MiB card-copy cap (`-CardBufferMB` changes it),
+versus upstream's 1024 MiB. Copies with before-twins may cost more than the cap.
+V3 also uses the upstream 1 MiB minimum card-copy size and wide copy-back.
+`-TargetReserveMB` controls V3's render-target reservation; it is not a hard
+VRAM cap. `-OnDemandMips` enables experimental sparse mip allocation.
+Try `-CopyQueue` or `-AsyncSubmit` separately only after a stable V3 baseline.
+Neither is enabled by default; indirect draw windows and in-flight fetching
+are kept off. If V3 is unstable, use `-Profile visuals` without those switches.
+These choices are hypotheses for 4 GB hardware, not measured wins.
 The new `VICTORY_PIPELINE_WORKERS` environment override permits
 controlling how many CPU threads compile pipelines (1 through 8).
 On this CPU the previous default was three workers.
@@ -61,6 +69,28 @@ Compare the number of `dropped ... without a host pipeline` draws,
 `being made` counts, CPU/RAM/VRAM, whether the same cutscene frames
 appear, and whether the title crashes. Use the same saved cache and
 game scene for fair comparisons.
+
+## V3 diagnostics and SSD migration
+
+The console prints a pipeline progress bar after every 32 completed background
+jobs and when the queue drains. The total is only the jobs discovered so far,
+not total game loading; new jobs can increase it. Failed jobs count as completed
+and are shown separately. Requested pipelines that finished without a usable
+host pipeline emit one warning per pipeline with shader hashes. This is not a
+lighting fix or an in-game overlay.
+
+V2's visuals profile explicitly disabled the upstream asynchronous copy-back
+relay. One observed frame reported 5777 ms copying back and 434 dropped draws
+with zero pipelines pending. V3 restores relay stage 2 for a controlled test.
+The timing may be reported differently with the relay active; compare actual
+frame times and the same scene rather than only the copy-back counter.
+
+For an SSD test, close the program, copy the existing data root to an external
+SSD folder (e.g. `E:\VIctoryForkData`), keep the old copy as backup, and pass
+`-DataRoot E:\VIctoryForkData` on launch. If moving the title itself, update
+`game_dir` in `victory.toml` and pass its new executable path. Do not place title
+files, caches or saves inside the repository. SSDs may improve I/O stalls and
+paging but do not correct shader or lighting errors.
 
 ## Next real rendering fixes
 
