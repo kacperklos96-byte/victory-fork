@@ -5,8 +5,8 @@ param(
     [ValidateNotNullOrEmpty()]
     [string]$GameExe,
 
-    [ValidateSet("visuals", "balanced", "fast-experimental")]
-    [string]$Profile = "visuals",
+    [ValidateSet("visuals", "balanced", "fast-experimental", "v3")]
+    [string]$Profile = "v3",
 
     [string]$DataRoot = "D:\VIctoryForkData",
 
@@ -16,7 +16,12 @@ param(
     [ValidateRange(128, 1024)]
     [int]$CardBufferMB = 512,
 
+    [ValidateRange(0, 8192)]
+    [int]$TargetReserveMB = 2048,
+
     [switch]$OnDemandMips,
+    [switch]$CopyQueue,
+    [switch]$AsyncSubmit,
 
     [switch]$Capture
 )
@@ -40,7 +45,14 @@ $variables = @(
     "VICTORY_CARD_BUFFERS_MB",
     "VICTORY_RELAY",
     "VICTORY_CAPTURE",
-    "VICTORY_LEVELS_ON_DEMAND"
+    "VICTORY_LEVELS_ON_DEMAND",
+    "VICTORY_CARD_ROOM_FOR_TARGETS_MB",
+    "VICTORY_CARD_BUFFERS_MIN_MB",
+    "VICTORY_WIDE_BACK",
+    "VICTORY_QUEUE2",
+    "VICTORY_ASYNC_SUBMIT",
+    "VICTORY_INDIRECT_WINDOW",
+    "VICTORY_CARD_FETCH_INFLIGHT"
 )
 $original = @{}
 foreach ($name in $variables) {
@@ -65,7 +77,23 @@ try {
     # Keep this an explicit opt-in until tested on the GTX 1650.
     $env:VICTORY_LEVELS_ON_DEMAND = if ($OnDemandMips) { "1" } else { "0" }
 
+    # Keep experimental combinations isolated for repeatable runs.
+    $env:VICTORY_QUEUE2 = if ($CopyQueue) { "1" } else { "0" }
+    $env:VICTORY_ASYNC_SUBMIT = if ($AsyncSubmit) { "1" } else { "0" }
+    $env:VICTORY_INDIRECT_WINDOW = "0"
+    $env:VICTORY_CARD_FETCH_INFLIGHT = "0"
+
     switch ($Profile) {
+        "v3" {
+            # V2 visuals forced relay off, causing synchronous copy-back.
+            # Use the upstream stage-2 path and retain a conservative wait.
+            $env:VICTORY_RELAY = "2"
+            $env:VICTORY_PIPELINE_WAIT_MS = "500"
+            $env:VICTORY_WIDE_BACK = "1"
+            $env:VICTORY_CARD_BUFFERS_MIN_MB = "1"
+            # The 3072 MiB upstream reservation was measured on a 4070.
+            $env:VICTORY_CARD_ROOM_FOR_TARGETS_MB = [string]$TargetReserveMB
+        }
         "visuals" {
             # Give one-off graphics passes more opportunity to get compiled.
             # More complete frames may mean even lower FPS.
@@ -97,6 +125,8 @@ try {
     Write-Host "Pipeline workers: $env:VICTORY_PIPELINE_WORKERS"
     Write-Host "Pipeline wait budget: $env:VICTORY_PIPELINE_WAIT_MS ms/frame"
     Write-Host "Card buffer cap: $env:VICTORY_CARD_BUFFERS_MB MiB"
+    Write-Host "Copy-back relay: $env:VICTORY_RELAY; copy queue: $env:VICTORY_QUEUE2; async submit: $env:VICTORY_ASYNC_SUBMIT"
+    Write-Host "Render-target reserve (MiB): $env:VICTORY_CARD_ROOM_FOR_TARGETS_MB (blank = upstream default)"
     Write-Host "On-demand texture levels: $env:VICTORY_LEVELS_ON_DEMAND"
     Write-Host "Pipeline cache: $cacheDir"
     Write-Host "Game data and crashes: $dataDir"
