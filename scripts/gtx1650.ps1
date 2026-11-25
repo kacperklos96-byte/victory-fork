@@ -10,6 +10,14 @@ param(
 
     [string]$DataRoot = "D:\VIctoryForkData",
 
+    [ValidateRange(1, 8)]
+    [int]$Workers = 2,
+
+    [ValidateRange(128, 1024)]
+    [int]$CardBufferMB = 512,
+
+    [switch]$OnDemandMips,
+
     [switch]$Capture
 )
 
@@ -31,7 +39,8 @@ $variables = @(
     "VICTORY_PIPELINE_WAIT_MS",
     "VICTORY_CARD_BUFFERS_MB",
     "VICTORY_RELAY",
-    "VICTORY_CAPTURE"
+    "VICTORY_CAPTURE",
+    "VICTORY_LEVELS_ON_DEMAND"
 )
 $original = @{}
 foreach ($name in $variables) {
@@ -46,11 +55,15 @@ try {
     $env:VICTORY_DATA_DIR = $dataDir
 
     # The i5-9400F has six cores. Reserve some CPU capacity for the title.
-    $env:VICTORY_PIPELINE_WORKERS = "2"
+    $env:VICTORY_PIPELINE_WORKERS = [string]$Workers
 
-    # Limit card-side copies a little below the default 512 MiB.
-    # This may reduce VRAM pressure but can slow down some buffers.
-    $env:VICTORY_CARD_BUFFERS_MB = "384"
+    # New upstream defaults to 1024 MiB. Keep a smaller starting cap on 4 GB
+    # hardware, but allow comparisons with the old 384 MiB cap.
+    $env:VICTORY_CARD_BUFFERS_MB = [string]$CardBufferMB
+
+    # Experimental: allocate only texture mip levels actually held by the title.
+    # Keep this an explicit opt-in until tested on the GTX 1650.
+    $env:VICTORY_LEVELS_ON_DEMAND = if ($OnDemandMips) { "1" } else { "0" }
 
     switch ($Profile) {
         "visuals" {
@@ -84,6 +97,8 @@ try {
     Write-Host "Pipeline workers: $env:VICTORY_PIPELINE_WORKERS"
     Write-Host "Pipeline wait budget: $env:VICTORY_PIPELINE_WAIT_MS ms/frame"
     Write-Host "Card buffer cap: $env:VICTORY_CARD_BUFFERS_MB MiB"
+    Write-Host "On-demand texture levels: $env:VICTORY_LEVELS_ON_DEMAND"
+    Write-Host "Pipeline cache: $cacheDir"
     Write-Host "Game data and crashes: $dataDir"
     & $binary run $GameExe --execute
     if ($LASTEXITCODE -ne 0) {
