@@ -33,6 +33,7 @@ pub(crate) struct Pending {
     /// whether a draw or dispatch has requested it yet.
     key: String,
     used: AtomicBool,
+    failure_reported: AtomicBool,
 }
 
 // SAFETY: D3D12 objects are free-threaded; the graphics state (whose input
@@ -56,6 +57,7 @@ impl Pending {
             made: OnceLock::new(),
             key: key.finalize().to_hex()[..32].to_owned(),
             used: AtomicBool::new(false),
+            failure_reported: AtomicBool::new(false),
         }
     }
 
@@ -109,6 +111,23 @@ fn wait_budget() -> Duration {
 
 /// Pipelines queued and not made yet.
 static WAITING: AtomicU64 = AtomicU64::new(0);
+static QUEUED_TOTAL: AtomicU64 = AtomicU64::new(0);
+static FINISHED_TOTAL: AtomicU64 = AtomicU64::new(0);
+static FAILED_TOTAL: AtomicU64 = AtomicU64::new(0);
+
+/// Counts only background jobs discovered in this process, not title loading.
+fn progress_cells(done: u64, total: u64) -> usize {
+    if total == 0 { 0 } else { ((u128::from(done.min(total)) * 20) / u128::from(total)) as usize }
+}
+
+fn report_progress(done: u64) {
+    let total = QUEUED_TOTAL.load(Ordering::Relaxed).max(done);
+    let filled = progress_cells(done, total);
+    let bar = format!("{}{}", "#".repeat(filled), "-".repeat(20 - filled));
+    tracing::info!(completed = done, discovered = total, pending = waiting(),
+        failed = FAILED_TOTAL.load(Ordering::Relaxed),
+        "pipeline progress [{bar}] (discovered jobs only; not game loading)");
+}
 
 /// Pipelines queued and not made yet (for the frame line).
 pub(crate) fn waiting() -> u64 {
@@ -127,7 +146,16 @@ pub(crate) fn ready(p: &Arc<Pending>) -> Option<&HostPipeline> {
         start(p, REQUESTED);
         wait(p, crate::frame::current());
     }
-    p.made.get()?.as_ref()
+    let made = p.made.get()?;
+    if made.is_none() && !p.failure_reported.swap(true, Ordering::Relaxed) {
+        let failed: Vec<_> = p.shaders.iter()
+            .filter(|s| matches!(s.translated.get(), Some(None)))
+            .map(|s| format!("{} {}", s.stage, s.hash))
+            .collect();
+        tracing::warn!(pipeline = %p.key, shaders = ?p.shaders, failed = ?failed,
+            "requested host pipeline unavailable (finished, not pending)");
+    }
+    made.as_ref()
 }
 
 /// Makes `p` on this thread if it is not made yet (waiting for a worker
@@ -277,6 +305,7 @@ fn start(p: &Arc<Pending>, priority: u8) {
     let mut queue = QUEUE.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(new) = queue.push(p, priority) {
         if new {
+            QUEUED_TOTAL.fetch_add(1, Ordering::Relaxed);
             PEAK.fetch_max(WAITING.fetch_add(1, Ordering::Relaxed) + 1, Ordering::Relaxed);
         }
         AVAILABLE.notify_one();
@@ -328,8 +357,17 @@ fn workers() -> bool {
                         let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
                     }
                     loop {
-                        next().make();
-                        if WAITING.fetch_sub(1, Ordering::Relaxed) == 1 {
+                        let job = next();
+                        job.make();
+                        if matches!(job.made.get(), Some(None)) {
+                            FAILED_TOTAL.fetch_add(1, Ordering::Relaxed);
+                        }
+                        let done = FINISHED_TOTAL.fetch_add(1, Ordering::Relaxed) + 1;
+                        let remaining = WAITING.fetch_sub(1, Ordering::Relaxed) - 1;
+                        if done.is_multiple_of(32) || remaining == 0 {
+                            report_progress(done);
+                        }
+                        if remaining == 0 {
                             drained();
                         } else {
                             super::library::save(false);
@@ -367,6 +405,15 @@ fn drained() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn progress_cells_are_bounded() {
+        assert_eq!(progress_cells(0, 0), 0);
+        assert_eq!(progress_cells(25, 100), 5);
+        assert_eq!(progress_cells(100, 100), 20);
+        assert_eq!(progress_cells(101, 100), 20);
+        assert_eq!(progress_cells(u64::MAX, u64::MAX), 20);
+    }
 
     #[test]
     fn pipeline_worker_override_respects_bounds() {
